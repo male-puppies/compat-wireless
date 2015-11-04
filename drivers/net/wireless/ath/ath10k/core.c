@@ -457,7 +457,7 @@ static int ath10k_download_and_run_otp(struct ath10k *ar)
 				   ar->fw_features))
 	    && result != 0) {
 		ath10k_err(ar, "otp calibration failed: %d", result);
-		return -EINVAL;
+		//return -EINVAL;
 	}
 
 	return 0;
