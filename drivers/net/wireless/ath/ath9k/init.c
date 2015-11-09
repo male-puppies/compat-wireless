@@ -52,6 +52,9 @@ MODULE_PARM_DESC(blink, "Enable LED blink on activity");
 static int ath9k_btcoex_enable;
 module_param_named(btcoex_enable, ath9k_btcoex_enable, int, 0444);
 MODULE_PARM_DESC(btcoex_enable, "Enable wifi-BT coexistence");
+extern int ugw_ath9k_min_rate;
+MODULE_PARM_DESC(ugw_ath9k_min_rate, "Set the min rate. {0=1Mbps,1Mbps,2Mbps}");
+module_param(ugw_ath9k_min_rate, int, 0644);
 
 static int ath9k_bt_ant_diversity;
 module_param_named(bt_ant_diversity, ath9k_bt_ant_diversity, int, 0444);

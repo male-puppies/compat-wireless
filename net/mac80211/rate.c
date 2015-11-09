@@ -218,6 +218,8 @@ static void rc_send_low_basicrate(s8 *idx, u32 basic_rates,
 	/* could not find a basic rate; use original selection */
 }
 
+int ugw_ath9k_min_rate = 0;
+EXPORT_SYMBOL(ugw_ath9k_min_rate);
 static void __rate_control_send_low(struct ieee80211_hw *hw,
 				    struct ieee80211_supported_band *sband,
 				    struct ieee80211_sta *sta,
@@ -233,7 +235,7 @@ static void __rate_control_send_low(struct ieee80211_hw *hw,
 		rate_flags |= IEEE80211_RATE_ERP_G;
 
 	info->control.rates[0].idx = 0;
-	for (i = 0; i < sband->n_bitrates; i++) {
+	for (i = ugw_ath9k_min_rate; i < sband->n_bitrates; i++) {
 		if (!(rate_mask & BIT(i)))
 			continue;
 
