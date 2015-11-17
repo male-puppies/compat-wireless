@@ -469,6 +469,36 @@ brcmf_find_wpsie(const u8 *parse, u32 len)
 	return NULL;
 }
 
+static int brcmf_vif_change_validate(struct brcmf_cfg80211_info *cfg,
+				     struct brcmf_cfg80211_vif *vif,
+				     enum nl80211_iftype new_type)
+{
+	int iftype_num[NUM_NL80211_IFTYPES];
+	struct brcmf_cfg80211_vif *pos;
+
+	memset(&iftype_num[0], 0, sizeof(iftype_num));
+	list_for_each_entry(pos, &cfg->vif_list, list)
+		if (pos == vif)
+			iftype_num[new_type]++;
+		else
+			iftype_num[pos->wdev.iftype]++;
+
+	return cfg80211_check_combinations(cfg->wiphy, 1, 0, iftype_num);
+}
+
+static int brcmf_vif_add_validate(struct brcmf_cfg80211_info *cfg,
+				  enum nl80211_iftype new_type)
+{
+	int iftype_num[NUM_NL80211_IFTYPES];
+	struct brcmf_cfg80211_vif *pos;
+
+	memset(&iftype_num[0], 0, sizeof(iftype_num));
+	list_for_each_entry(pos, &cfg->vif_list, list)
+		iftype_num[pos->wdev.iftype]++;
+
+	iftype_num[new_type]++;
+	return cfg80211_check_combinations(cfg->wiphy, 1, 0, iftype_num);
+}
 
 static void convert_key_from_CPU(struct brcmf_wsec_key *key,
 				 struct brcmf_wsec_key_le *key_le)
@@ -662,9 +692,43 @@ static struct wireless_dev *brcmf_cfg80211_add_iface(struct wiphy *wiphy,
 						     u32 *flags,
 						     struct vif_params *params)
 {
+	struct net_device *dev;
 	struct wireless_dev *wdev;
+	int err;
+
+	/*
+	 * There is a bug with in-firmware BSS management. When adding virtual
+	 * interface brcmfmac first tells firmware to create new BSS and then
+	 * it creates new struct net_device.
+	 *
+	 * If creating/registering netdev(ice) fails, BSS remains in some bugged
+	 * state. It conflicts with existing BSSes by overtaking their auth
+	 * requests.
+	 *
+	 * It results in one BSS (addresss X) sending beacons and another BSS
+	 * (address Y) replying to authentication requests. This makes interface
+	 * unusable as AP.
+	 *
+	 * To workaround this bug we may try to guess if register_netdev(ice)
+	 * will fail. The most obvious case is using interface name that already
+	 * exists. This is actually quite likely with brcmfmac & some user space
+	 * scripts as brcmfmac doesn't allow deleting virtual interfaces.
+	 * So this bug can be triggered even by something trivial like:
+	 * iw dev wlan0 delete
+	 * iw phy phy0 interface add wlan0 type __ap
+	 */
+	dev = dev_get_by_name(&init_net, name);
+	if (dev) {
+		dev_put(dev);
+		return ERR_PTR(-EEXIST);
+	}
 
 	brcmf_dbg(TRACE, "enter: %s type %d\n", name, type);
+	err = brcmf_vif_add_validate(wiphy_to_cfg(wiphy), type);
+	if (err) {
+		brcmf_err("iface validation failed: err=%d\n", err);
+		return ERR_PTR(err);
+	}
 	switch (type) {
 	case NL80211_IFTYPE_ADHOC:
 	case NL80211_IFTYPE_STATION:
@@ -823,8 +887,12 @@ brcmf_cfg80211_change_iface(struct wiphy *wiphy, struct net_device *ndev,
 	s32 ap = 0;
 	s32 err = 0;
 
-	brcmf_dbg(TRACE, "Enter, ndev=%p, type=%d\n", ndev, type);
-
+	brcmf_dbg(TRACE, "Enter, idx=%d, type=%d\n", ifp->bssidx, type);
+	err = brcmf_vif_change_validate(wiphy_to_cfg(wiphy), vif, type);
+	if (err) {
+		brcmf_err("iface validation failed: err=%d\n", err);
+		return err;
+	}
 	switch (type) {
 	case NL80211_IFTYPE_MONITOR:
 	case NL80211_IFTYPE_WDS:
@@ -4707,7 +4775,8 @@ void brcmf_cfg80211_free_netdev(struct net_device *ndev)
 	ifp = netdev_priv(ndev);
 	vif = ifp->vif;
 
-	brcmf_free_vif(vif);
+	if (vif)
+		brcmf_free_vif(vif);
 	free_netdev(ndev);
 }
 
@@ -4943,7 +5012,7 @@ brcmf_notify_connect_status_ap(struct brcmf_cfg80211_info *cfg,
 		brcmf_dbg(CONN, "AP mode link down\n");
 		complete(&cfg->vif_disabled);
 		if (ifp->vif->mbss)
-			brcmf_remove_interface(ifp->drvr, ifp->bssidx);
+			brcmf_remove_interface(ifp);
 		return 0;
 	}
 
@@ -5695,63 +5764,132 @@ brcmf_txrx_stypes[NUM_NL80211_IFTYPES] = {
 	}
 };
 
+/**
+ * brcmf_setup_ifmodes() - determine interface modes and combinations.
+ *
+ * @wiphy: wiphy object.
+ * @ifp: interface object needed for feat module api.
+ *
+ * The interface modes and combinations are determined dynamically here
+ * based on firmware functionality.
+ *
+ * no p2p and no mbss:
+ *
+ *	#STA <= 1, #AP <= 1, channels = 1, 2 total
+ *
+ * no p2p and mbss:
+ *
+ *	#STA <= 1, #AP <= 1, channels = 1, 2 total
+ *	#AP <= 4, matching BI, channels = 1, 4 total
+ *
+ * p2p, no mchan, and mbss:
+ *
+ *	#STA <= 1, #P2P-DEV <= 1, #{P2P-CL, P2P-GO} <= 1, channels = 1, 3 total
+ *	#STA <= 1, #P2P-DEV <= 1, #AP <= 1, #P2P-CL <= 1, channels = 1, 4 total
+ *	#AP <= 4, matching BI, channels = 1, 4 total
+ *
+ * p2p, mchan, and mbss:
+ *
+ *	#STA <= 1, #P2P-DEV <= 1, #{P2P-CL, P2P-GO} <= 1, channels = 2, 3 total
+ *	#STA <= 1, #P2P-DEV <= 1, #AP <= 1, #P2P-CL <= 1, channels = 1, 4 total
+ *	#AP <= 4, matching BI, channels = 1, 4 total
+ */
 static int brcmf_setup_ifmodes(struct wiphy *wiphy, struct brcmf_if *ifp)
 {
 	struct ieee80211_iface_combination *combo = NULL;
-	struct ieee80211_iface_limit *limits = NULL;
-	int i = 0, max_iface_cnt;
+	struct ieee80211_iface_limit *c0_limits = NULL;
+	struct ieee80211_iface_limit *p2p_limits = NULL;
+	struct ieee80211_iface_limit *mbss_limits = NULL;
+	bool mbss, p2p;
+	int i, c, n_combos;
 
-	combo = kzalloc(sizeof(*combo), GFP_KERNEL);
+	mbss = brcmf_feat_is_enabled(ifp, BRCMF_FEAT_MBSS);
+	p2p = brcmf_feat_is_enabled(ifp, BRCMF_FEAT_P2P);
+
+	n_combos = 1 + !!p2p + !!mbss;
+	combo = kcalloc(n_combos, sizeof(*combo), GFP_KERNEL);
 	if (!combo)
 		goto err;
 
-	limits = kzalloc(sizeof(*limits) * 4, GFP_KERNEL);
-	if (!limits)
+	c0_limits = kcalloc(p2p ? 3 : 2, sizeof(*c0_limits), GFP_KERNEL);
+	if (!c0_limits)
 		goto err;
+
+	if (p2p) {
+		p2p_limits = kcalloc(4, sizeof(*p2p_limits), GFP_KERNEL);
+		if (!p2p_limits)
+			goto err;
+	}
+
+	if (mbss) {
+		mbss_limits = kcalloc(1, sizeof(*mbss_limits), GFP_KERNEL);
+		if (!mbss_limits)
+			goto err;
+	}
 
 	wiphy->interface_modes = BIT(NL80211_IFTYPE_STATION) |
 				 BIT(NL80211_IFTYPE_ADHOC) |
 				 BIT(NL80211_IFTYPE_AP);
 
-	if (brcmf_feat_is_enabled(ifp, BRCMF_FEAT_MCHAN))
-		combo->num_different_channels = 2;
-	else
-		combo->num_different_channels = 1;
-
-	if (brcmf_feat_is_enabled(ifp, BRCMF_FEAT_MBSS)) {
-		limits[i].max = 1;
-		limits[i++].types = BIT(NL80211_IFTYPE_STATION);
-		limits[i].max = 4;
-		limits[i++].types = BIT(NL80211_IFTYPE_AP);
-		max_iface_cnt = 5;
-	} else {
-		limits[i].max = 2;
-		limits[i++].types = BIT(NL80211_IFTYPE_STATION) |
-				    BIT(NL80211_IFTYPE_AP);
-		max_iface_cnt = 2;
-	}
-
-	if (brcmf_feat_is_enabled(ifp, BRCMF_FEAT_P2P)) {
+	c = 0;
+	i = 0;
+	combo[c].num_different_channels = 1;
+	c0_limits[i].max = 1;
+	c0_limits[i++].types = BIT(NL80211_IFTYPE_STATION);
+	if (p2p) {
+		if (brcmf_feat_is_enabled(ifp, BRCMF_FEAT_MCHAN))
+			combo[c].num_different_channels = 2;
 		wiphy->interface_modes |= BIT(NL80211_IFTYPE_P2P_CLIENT) |
 					  BIT(NL80211_IFTYPE_P2P_GO) |
 					  BIT(NL80211_IFTYPE_P2P_DEVICE);
-		limits[i].max = 1;
-		limits[i++].types = BIT(NL80211_IFTYPE_P2P_CLIENT) |
-				    BIT(NL80211_IFTYPE_P2P_GO);
-		limits[i].max = 1;
-		limits[i++].types = BIT(NL80211_IFTYPE_P2P_DEVICE);
-		max_iface_cnt += 2;
+		c0_limits[i].max = 1;
+		c0_limits[i++].types = BIT(NL80211_IFTYPE_P2P_DEVICE);
+		c0_limits[i].max = 1;
+		c0_limits[i++].types = BIT(NL80211_IFTYPE_P2P_CLIENT) |
+				       BIT(NL80211_IFTYPE_P2P_GO);
+	} else {
+		c0_limits[i].max = 1;
+		c0_limits[i++].types = BIT(NL80211_IFTYPE_AP);
 	}
-	combo->max_interfaces = max_iface_cnt;
-	combo->limits = limits;
-	combo->n_limits = i;
+	combo[c].max_interfaces = i;
+	combo[c].n_limits = i;
+	combo[c].limits = c0_limits;
 
+	if (p2p) {
+		c++;
+		i = 0;
+		combo[c].num_different_channels = 1;
+		p2p_limits[i].max = 1;
+		p2p_limits[i++].types = BIT(NL80211_IFTYPE_STATION);
+		p2p_limits[i].max = 1;
+		p2p_limits[i++].types = BIT(NL80211_IFTYPE_AP);
+		p2p_limits[i].max = 1;
+		p2p_limits[i++].types = BIT(NL80211_IFTYPE_P2P_CLIENT);
+		p2p_limits[i].max = 1;
+		p2p_limits[i++].types = BIT(NL80211_IFTYPE_P2P_DEVICE);
+		combo[c].max_interfaces = i;
+		combo[c].n_limits = i;
+		combo[c].limits = p2p_limits;
+	}
+
+	if (mbss) {
+		c++;
+		combo[c].beacon_int_infra_match = true;
+		combo[c].num_different_channels = 1;
+		mbss_limits[0].max = 4;
+		mbss_limits[0].types = BIT(NL80211_IFTYPE_AP);
+		combo[c].max_interfaces = 4;
+		combo[c].n_limits = 1;
+		combo[c].limits = mbss_limits;
+	}
+	wiphy->n_iface_combinations = n_combos;
 	wiphy->iface_combinations = combo;
-	wiphy->n_iface_combinations = 1;
 	return 0;
 
 err:
-	kfree(limits);
+	kfree(c0_limits);
+	kfree(p2p_limits);
+	kfree(mbss_limits);
 	kfree(combo);
 	return -ENOMEM;
 }
@@ -5786,7 +5924,9 @@ static void brcmf_wiphy_wowl_params(struct wiphy *wiphy)
 static int brcmf_setup_wiphy(struct wiphy *wiphy, struct brcmf_if *ifp)
 {
 	struct brcmf_pub *drvr = ifp->drvr;
+	const struct ieee80211_iface_combination *combo;
 	struct ieee80211_supported_band *band;
+	u16 max_interfaces = 0;
 	__le32 bandlist[3];
 	u32 n_bands;
 	int err, i;
@@ -5799,8 +5939,13 @@ static int brcmf_setup_wiphy(struct wiphy *wiphy, struct brcmf_if *ifp)
 	if (err)
 		return err;
 
-	for (i = 0; i < wiphy->iface_combinations->max_interfaces &&
-	     i < ARRAY_SIZE(drvr->addresses); i++) {
+	for (i = 0, combo = wiphy->iface_combinations;
+	     i < wiphy->n_iface_combinations; i++, combo++) {
+		max_interfaces = max(max_interfaces, combo->max_interfaces);
+	}
+
+	for (i = 0; i < max_interfaces && i < ARRAY_SIZE(drvr->addresses);
+	     i++) {
 		u8 *addr = drvr->addresses[i].addr;
 
 		memcpy(addr, drvr->mac, ETH_ALEN);
@@ -6073,11 +6218,15 @@ static void brcmf_cfg80211_reg_notifier(struct wiphy *wiphy,
 
 static void brcmf_free_wiphy(struct wiphy *wiphy)
 {
+	int i;
+
 	if (!wiphy)
 		return;
 
-	if (wiphy->iface_combinations)
-		kfree(wiphy->iface_combinations->limits);
+	if (wiphy->iface_combinations) {
+		for (i = 0; i < wiphy->n_iface_combinations; i++)
+			kfree(wiphy->iface_combinations[i].limits);
+	}
 	kfree(wiphy->iface_combinations);
 	if (wiphy->bands[IEEE80211_BAND_2GHZ]) {
 		kfree(wiphy->bands[IEEE80211_BAND_2GHZ]->channels);
@@ -6093,7 +6242,7 @@ static void brcmf_free_wiphy(struct wiphy *wiphy)
 struct brcmf_cfg80211_info *brcmf_cfg80211_attach(struct brcmf_pub *drvr,
 						  struct device *busdev)
 {
-	struct net_device *ndev = drvr->iflist[0]->ndev;
+	struct net_device *ndev = brcmf_get_ifp(drvr, 0)->ndev;
 	struct brcmf_cfg80211_info *cfg;
 	struct wiphy *wiphy;
 	struct brcmf_cfg80211_vif *vif;

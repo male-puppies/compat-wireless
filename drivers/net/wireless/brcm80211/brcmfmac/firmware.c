@@ -19,6 +19,9 @@
 #include <linux/device.h>
 #include <linux/firmware.h>
 #include <linux/module.h>
+#if IS_ENABLED(CONFIG_BCM47XX_NVRAM)
+#include <linux/bcm47xx_nvram.h>
+#endif
 
 #include "debug.h"
 #include "firmware.h"
@@ -419,27 +422,55 @@ struct brcmf_fw {
 	u16 bus_nr;
 	void (*done)(struct device *dev, const struct firmware *fw,
 		     void *nvram_image, u32 nvram_len);
+	struct completion *completion;
 };
 
 static void brcmf_fw_request_nvram_done(const struct firmware *fw, void *ctx)
 {
 	struct brcmf_fw *fwctx = ctx;
+#if IS_ENABLED(CONFIG_BCM47XX_NVRAM)
+	u8 *bcm47xx_nvram = NULL;
+	size_t bcm47xx_nvram_len;
+#endif
+	const u8 *data = NULL;
+	size_t data_len;
 	u32 nvram_length = 0;
 	void *nvram = NULL;
 
 	brcmf_dbg(TRACE, "enter: dev=%s\n", dev_name(fwctx->dev));
-	if (!fw && !(fwctx->flags & BRCMF_FW_REQ_NV_OPTIONAL))
+	if (fw) {
+		data = fw->data;
+		data_len = fw->size;
+	}
+#if IS_ENABLED(CONFIG_BCM47XX_NVRAM)
+	else {
+		bcm47xx_nvram = bcm47xx_nvram_get_contents(&bcm47xx_nvram_len);
+		if (bcm47xx_nvram) {
+			data = bcm47xx_nvram;
+			data_len = bcm47xx_nvram_len;
+			brcmf_err("Found platform NVRAM (%zu B)\n", data_len);
+		}
+	}
+#endif
+	if (!data && !(fwctx->flags & BRCMF_FW_REQ_NV_OPTIONAL))
 		goto fail;
 
-	if (fw) {
-		nvram = brcmf_fw_nvram_strip(fw->data, fw->size, &nvram_length,
+	if (data) {
+		nvram = brcmf_fw_nvram_strip(data, data_len, &nvram_length,
 					     fwctx->domain_nr, fwctx->bus_nr);
-		release_firmware(fw);
+		if (fw)
+			release_firmware(fw);
+#if IS_ENABLED(CONFIG_BCM47XX_NVRAM)
+		if (bcm47xx_nvram)
+			bcm47xx_nvram_release_contents(bcm47xx_nvram);
+#endif
 		if (!nvram && !(fwctx->flags & BRCMF_FW_REQ_NV_OPTIONAL))
 			goto fail;
 	}
 
 	fwctx->done(fwctx->dev, fwctx->code, nvram, nvram_length);
+	if (fwctx->completion)
+		complete(fwctx->completion);
 	kfree(fwctx);
 	return;
 
@@ -447,6 +478,8 @@ fail:
 	brcmf_dbg(TRACE, "failed: dev=%s\n", dev_name(fwctx->dev));
 	release_firmware(fwctx->code);
 	device_release_driver(fwctx->dev);
+	if (fwctx->completion)
+		complete(fwctx->completion);
 	kfree(fwctx);
 }
 
@@ -462,6 +495,8 @@ static void brcmf_fw_request_code_done(const struct firmware *fw, void *ctx)
 	/* only requested code so done here */
 	if (!(fwctx->flags & BRCMF_FW_REQUEST_NVRAM)) {
 		fwctx->done(fwctx->dev, fw, NULL, 0);
+		if (fwctx->completion)
+			complete(fwctx->completion);
 		kfree(fwctx);
 		return;
 	}
@@ -476,6 +511,8 @@ static void brcmf_fw_request_code_done(const struct firmware *fw, void *ctx)
 	/* when nvram is optional call .done() callback here */
 	if (fwctx->flags & BRCMF_FW_REQ_NV_OPTIONAL) {
 		fwctx->done(fwctx->dev, fw, NULL, 0);
+		if (fwctx->completion)
+			complete(fwctx->completion);
 		kfree(fwctx);
 		return;
 	}
@@ -485,6 +522,8 @@ static void brcmf_fw_request_code_done(const struct firmware *fw, void *ctx)
 fail:
 	brcmf_dbg(TRACE, "failed: dev=%s\n", dev_name(fwctx->dev));
 	device_release_driver(fwctx->dev);
+	if (fwctx->completion)
+		complete(fwctx->completion);
 	kfree(fwctx);
 }
 
@@ -496,6 +535,8 @@ int brcmf_fw_get_firmwares_pcie(struct device *dev, u16 flags,
 				u16 domain_nr, u16 bus_nr)
 {
 	struct brcmf_fw *fwctx;
+	struct completion completion;
+	int err;
 
 	brcmf_dbg(TRACE, "enter: dev=%s\n", dev_name(dev));
 	if (!fw_cb || !code)
@@ -516,9 +557,17 @@ int brcmf_fw_get_firmwares_pcie(struct device *dev, u16 flags,
 	fwctx->domain_nr = domain_nr;
 	fwctx->bus_nr = bus_nr;
 
-	return request_firmware_nowait(THIS_MODULE, true, code, dev,
+	init_completion(&completion);
+	fwctx->completion = &completion;
+
+	err = request_firmware_nowait(THIS_MODULE, true, code, dev,
 				       GFP_KERNEL, fwctx,
 				       brcmf_fw_request_code_done);
+	if (!err)
+		wait_for_completion_timeout(fwctx->completion,
+					    msecs_to_jiffies(5000));
+	fwctx->completion = NULL;
+	return err;
 }
 
 int brcmf_fw_get_firmwares(struct device *dev, u16 flags,

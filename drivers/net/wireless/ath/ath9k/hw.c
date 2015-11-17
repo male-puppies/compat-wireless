@@ -246,6 +246,19 @@ void ath9k_hw_get_channel_centers(struct ath_hw *ah,
 		centers->synth_center + (extoff * HT40_CHANNEL_CENTER_SHIFT);
 }
 
+static inline void ath9k_hw_disable_pll_lock_detect(struct ath_hw *ah)
+{
+	/* On AR9330 and AR9340 devices, some PHY registers must be
+	 * tuned to gain better stability/performance. These registers
+	 * might be changed while doing wlan reset so the registers must
+	 * be reprogrammed after each reset.
+	 */
+	REG_CLR_BIT(ah, AR_PHY_USB_CTRL1, BIT(20));
+	REG_RMW(ah, AR_PHY_USB_CTRL2,
+		(1 << 21) | (0xf << 22),
+		(1 << 21) | (0x3 << 22));
+}
+
 /******************/
 /* Chip Revisions */
 /******************/
@@ -390,13 +403,8 @@ static void ath9k_hw_init_config(struct ath_hw *ah)
 
 	ah->config.rx_intr_mitigation = true;
 
-	if (AR_SREV_9300_20_OR_LATER(ah)) {
-		ah->config.rimt_last = 500;
-		ah->config.rimt_first = 2000;
-	} else {
-		ah->config.rimt_last = 250;
-		ah->config.rimt_first = 700;
-	}
+	ah->config.rimt_last = 250;
+	ah->config.rimt_first = 500;
 
 	if (AR_SREV_9462(ah) || AR_SREV_9565(ah))
 		ah->config.pll_pwrsave = 7;
@@ -656,6 +664,7 @@ int ath9k_hw_init(struct ath_hw *ah)
 
 	/* These are all the AR5008/AR9001/AR9002/AR9003 hardware family of chipsets */
 	switch (ah->hw_version.devid) {
+	case AR9300_DEVID_INVALID:
 	case AR5416_DEVID_PCI:
 	case AR5416_DEVID_PCIE:
 	case AR5416_AR9100_DEVID:
@@ -1390,6 +1399,9 @@ static bool ath9k_hw_set_reset(struct ath_hw *ah, int type)
 	if (AR_SREV_9100(ah))
 		udelay(50);
 
+	if (AR_SREV_9330(ah) || AR_SREV_9340(ah))
+		ath9k_hw_disable_pll_lock_detect(ah);
+
 	return true;
 }
 
@@ -1488,6 +1500,9 @@ static bool ath9k_hw_chip_reset(struct ath_hw *ah,
 	if (AR_SREV_9330(ah))
 		ar9003_hw_internal_regulator_apply(ah);
 	ath9k_hw_init_pll(ah, chan);
+
+	if (AR_SREV_9330(ah) || AR_SREV_9340(ah))
+		ath9k_hw_disable_pll_lock_detect(ah);
 
 	return true;
 }
@@ -1790,8 +1805,14 @@ static int ath9k_hw_do_fastcc(struct ath_hw *ah, struct ath9k_channel *chan)
 	if (AR_SREV_9271(ah))
 		ar9002_hw_load_ani_reg(ah, chan);
 
+	if (AR_SREV_9330(ah) || AR_SREV_9340(ah))
+		ath9k_hw_disable_pll_lock_detect(ah);
+
 	return 0;
 fail:
+	if (AR_SREV_9330(ah) || AR_SREV_9340(ah))
+		ath9k_hw_disable_pll_lock_detect(ah);
+
 	return -EINVAL;
 }
 
@@ -1811,6 +1832,20 @@ u32 ath9k_hw_get_tsf_offset(struct timespec *last, struct timespec *cur)
 	return (u32) usec;
 }
 EXPORT_SYMBOL(ath9k_hw_get_tsf_offset);
+
+void ath9k_hw_update_diag(struct ath_hw *ah)
+{
+	if (test_bit(ATH_DIAG_DISABLE_RX, &ah->diag))
+		REG_SET_BIT(ah, AR_DIAG_SW, AR_DIAG_RX_DIS);
+	else
+		REG_CLR_BIT(ah, AR_DIAG_SW, AR_DIAG_RX_DIS);
+
+	if (test_bit(ATH_DIAG_DISABLE_TX, &ah->diag))
+		REG_SET_BIT(ah, AR_DIAG_SW, AR_DIAG_LOOP_BACK);
+	else
+		REG_CLR_BIT(ah, AR_DIAG_SW, AR_DIAG_LOOP_BACK);
+}
+EXPORT_SYMBOL(ath9k_hw_update_diag);
 
 int ath9k_hw_reset(struct ath_hw *ah, struct ath9k_channel *chan,
 		   struct ath9k_hw_cal_data *caldata, bool fastcc)
@@ -2020,6 +2055,7 @@ int ath9k_hw_reset(struct ath_hw *ah, struct ath9k_channel *chan,
 		ar9003_hw_disable_phy_restart(ah);
 
 	ath9k_hw_apply_gpio_override(ah);
+	ath9k_hw_update_diag(ah);
 
 	if (AR_SREV_9565(ah) && common->bt_ant_diversity)
 		REG_SET_BIT(ah, AR_BTCOEX_WL_LNADIV, AR_BTCOEX_WL_LNADIV_FORCE_ON);
@@ -2029,6 +2065,9 @@ int ath9k_hw_reset(struct ath_hw *ah, struct ath9k_channel *chan,
 		ah->radar_conf.ext_channel = IS_CHAN_HT40(chan);
 		ath9k_hw_set_radar_params(ah);
 	}
+
+	if (AR_SREV_9330(ah) || AR_SREV_9340(ah))
+		ath9k_hw_disable_pll_lock_detect(ah);
 
 	return 0;
 }

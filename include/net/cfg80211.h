@@ -2320,6 +2320,7 @@ struct cfg80211_qos_map {
  *	(as advertised by the nl80211 feature flag.)
  * @get_tx_power: store the current TX power into the dbm variable;
  *	return 0 if successful
+ * @set_antenna_gain: set antenna gain to reduce maximum tx power if necessary
  *
  * @set_wds_peer: set the WDS peer for a WDS interface
  *
@@ -2576,6 +2577,7 @@ struct cfg80211_ops {
 				enum nl80211_tx_power_setting type, int mbm);
 	int	(*get_tx_power)(struct wiphy *wiphy, struct wireless_dev *wdev,
 				int *dbm);
+	int	(*set_antenna_gain)(struct wiphy *wiphy, int dbi);
 
 	int	(*set_wds_peer)(struct wiphy *wiphy, struct net_device *dev,
 				const u8 *addr);

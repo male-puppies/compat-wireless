@@ -2083,6 +2083,8 @@ struct wireless_dev *lbs_cfg_alloc(struct device *dev)
 		goto err_wiphy_new;
 	}
 
+	set_wiphy_dev(wdev->wiphy, dev);
+
 	lbs_deb_leave(LBS_DEB_CFG80211);
 	return wdev;
 
@@ -2170,6 +2172,8 @@ int lbs_cfg_register(struct lbs_private *priv)
 	wdev->wiphy->cipher_suites = cipher_suites;
 	wdev->wiphy->n_cipher_suites = ARRAY_SIZE(cipher_suites);
 	wdev->wiphy->reg_notifier = lbs_reg_notifier;
+
+	memcpy(wdev->wiphy->perm_addr, priv->current_addr, ETH_ALEN);
 
 	ret = wiphy_register(wdev->wiphy);
 	if (ret < 0)

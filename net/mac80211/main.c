@@ -95,7 +95,7 @@ static u32 ieee80211_hw_conf_chan(struct ieee80211_local *local)
 	struct ieee80211_sub_if_data *sdata;
 	struct cfg80211_chan_def chandef = {};
 	u32 changed = 0;
-	int power;
+	int power, max_power;
 	u32 offchannel_flag;
 
 	offchannel_flag = local->hw.conf.flags & IEEE80211_CONF_OFFCHANNEL;
@@ -151,6 +151,12 @@ static u32 ieee80211_hw_conf_chan(struct ieee80211_local *local)
 		power = min(power, sdata->vif.bss_conf.txpower);
 	}
 	rcu_read_unlock();
+
+	max_power = chandef.chan->max_reg_power;
+	if (local->user_antenna_gain > 0) {
+		max_power -= local->user_antenna_gain;
+		power = min(power, max_power);
+	}
 
 	if (local->hw.conf.power_level != power) {
 		changed |= IEEE80211_CONF_CHANGE_POWER;
@@ -287,7 +293,7 @@ void ieee80211_restart_hw(struct ieee80211_hw *hw)
 }
 EXPORT_SYMBOL(ieee80211_restart_hw);
 
-#ifdef CONFIG_INET
+#ifdef __disabled__CONFIG_INET
 static int ieee80211_ifa_changed(struct notifier_block *nb,
 				 unsigned long data, void *arg)
 {
@@ -346,7 +352,7 @@ static int ieee80211_ifa_changed(struct notifier_block *nb,
 }
 #endif
 
-#if IS_ENABLED(CONFIG_IPV6)
+#if IS_ENABLED(__disabled__CONFIG_IPV6)
 static int ieee80211_ifa6_changed(struct notifier_block *nb,
 				  unsigned long data, void *arg)
 {
@@ -581,6 +587,7 @@ struct ieee80211_hw *ieee80211_alloc_hw_nm(size_t priv_data_len,
 					 IEEE80211_RADIOTAP_MCS_HAVE_BW;
 	local->hw.radiotap_vht_details = IEEE80211_RADIOTAP_VHT_KNOWN_GI |
 					 IEEE80211_RADIOTAP_VHT_KNOWN_BANDWIDTH;
+	local->user_antenna_gain = 0;
 	local->hw.uapsd_queues = IEEE80211_DEFAULT_UAPSD_QUEUES;
 	local->hw.uapsd_max_sp_len = IEEE80211_DEFAULT_MAX_SP_LEN;
 	local->user_power_level = IEEE80211_UNSET_POWER_LEVEL;
@@ -1031,6 +1038,7 @@ int ieee80211_register_hw(struct ieee80211_hw *hw)
 	 */
 	local->tx_headroom = max_t(unsigned int , local->hw.extra_tx_headroom,
 				   IEEE80211_TX_STATUS_HEADROOM);
+	local->tx_headroom = ALIGN(local->tx_headroom, 4);
 
 	debugfs_hw_add(local);
 
@@ -1086,14 +1094,14 @@ int ieee80211_register_hw(struct ieee80211_hw *hw)
 	if (result)
 		goto fail_pm_qos;
 
-#ifdef CONFIG_INET
+#ifdef __disabled__CONFIG_INET
 	local->ifa_notifier.notifier_call = ieee80211_ifa_changed;
 	result = register_inetaddr_notifier(&local->ifa_notifier);
 	if (result)
 		goto fail_ifa;
 #endif
 
-#if IS_ENABLED(CONFIG_IPV6)
+#if IS_ENABLED(__disabled__CONFIG_IPV6)
 	local->ifa6_notifier.notifier_call = ieee80211_ifa6_changed;
 	result = register_inet6addr_notifier(&local->ifa6_notifier);
 	if (result)
@@ -1102,13 +1110,13 @@ int ieee80211_register_hw(struct ieee80211_hw *hw)
 
 	return 0;
 
-#if IS_ENABLED(CONFIG_IPV6)
+#if IS_ENABLED(__disabled__CONFIG_IPV6)
  fail_ifa6:
-#ifdef CONFIG_INET
+#ifdef __disabled__CONFIG_INET
 	unregister_inetaddr_notifier(&local->ifa_notifier);
 #endif
 #endif
-#if defined(CONFIG_INET) || defined(CONFIG_IPV6)
+#if defined(__disabled__CONFIG_INET) || defined(__disabled__CONFIG_IPV6)
  fail_ifa:
 	pm_qos_remove_notifier(PM_QOS_NETWORK_LATENCY,
 			       &local->network_latency_notifier);
@@ -1141,10 +1149,10 @@ void ieee80211_unregister_hw(struct ieee80211_hw *hw)
 
 	pm_qos_remove_notifier(PM_QOS_NETWORK_LATENCY,
 			       &local->network_latency_notifier);
-#ifdef CONFIG_INET
+#ifdef __disabled__CONFIG_INET
 	unregister_inetaddr_notifier(&local->ifa_notifier);
 #endif
-#if IS_ENABLED(CONFIG_IPV6)
+#if IS_ENABLED(__disabled__CONFIG_IPV6)
 	unregister_inet6addr_notifier(&local->ifa6_notifier);
 #endif
 

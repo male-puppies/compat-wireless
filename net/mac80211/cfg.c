@@ -886,7 +886,6 @@ static int ieee80211_stop_ap(struct wiphy *wiphy, struct net_device *dev)
 	sdata->u.ap.driver_smps_mode = IEEE80211_SMPS_OFF;
 
 	__sta_info_flush(sdata, true);
-	ieee80211_free_keys(sdata, true);
 
 	sdata->vif.bss_conf.enable_beacon = false;
 	sdata->vif.bss_conf.ssid_len = 0;
@@ -2009,7 +2008,7 @@ static int ieee80211_scan(struct wiphy *wiphy,
 		 * the  frames sent while scanning on other channel will be
 		 * lost)
 		 */
-		if (sdata->u.ap.beacon &&
+		if (0 && sdata->u.ap.beacon &&
 		    (!(wiphy->features & NL80211_FEATURE_AP_SCAN) ||
 		     !(req->flags & NL80211_SCAN_FLAG_AP)))
 			return -EOPNOTSUPP;
@@ -2230,6 +2229,19 @@ static int ieee80211_get_tx_power(struct wiphy *wiphy,
 		*dbm = local->hw.conf.power_level;
 	else
 		*dbm = sdata->vif.bss_conf.txpower;
+
+	return 0;
+}
+
+static int ieee80211_set_antenna_gain(struct wiphy *wiphy, int dbi)
+{
+	struct ieee80211_local *local = wiphy_priv(wiphy);
+
+	if (dbi < 0)
+		return -EINVAL;
+
+	local->user_antenna_gain = dbi;
+	ieee80211_hw_config(local, 0);
 
 	return 0;
 }
@@ -3846,6 +3858,7 @@ const struct cfg80211_ops mac80211_config_ops = {
 	.set_wiphy_params = ieee80211_set_wiphy_params,
 	.set_tx_power = ieee80211_set_tx_power,
 	.get_tx_power = ieee80211_get_tx_power,
+	.set_antenna_gain = ieee80211_set_antenna_gain,
 	.set_wds_peer = ieee80211_set_wds_peer,
 	.rfkill_poll = ieee80211_rfkill_poll,
 	CFG80211_TESTMODE_CMD(ieee80211_testmode_cmd)

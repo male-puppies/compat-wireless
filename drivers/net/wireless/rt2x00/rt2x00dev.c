@@ -26,6 +26,7 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/log2.h>
+#include <linux/of.h>
 
 #include "rt2x00.h"
 #include "rt2x00lib.h"
@@ -931,6 +932,18 @@ static void rt2x00lib_rate(struct ieee80211_rate *entry,
 		entry->flags |= IEEE80211_RATE_SHORT_PREAMBLE;
 }
 
+const u8 *rt2x00lib_get_mac_address(struct rt2x00_dev *rt2x00dev)
+{
+	struct rt2x00_platform_data *pdata;
+
+	pdata = rt2x00dev->dev->platform_data;
+	if (!pdata)
+		return NULL;
+
+	return pdata->mac_address;
+}
+EXPORT_SYMBOL_GPL(rt2x00lib_get_mac_address);
+
 static int rt2x00lib_probe_hw_modes(struct rt2x00_dev *rt2x00dev,
 				    struct hw_mode_spec *spec)
 {
@@ -939,6 +952,32 @@ static int rt2x00lib_probe_hw_modes(struct rt2x00_dev *rt2x00dev,
 	struct ieee80211_rate *rates;
 	unsigned int num_rates;
 	unsigned int i;
+#ifdef CONFIG_OF
+	struct device_node *np = rt2x00dev->dev->of_node;
+	unsigned int enabled;
+	if (!of_property_read_u32(np, "ralink,2ghz",
+                                          &enabled) && !enabled)
+		spec->supported_bands &= ~SUPPORT_BAND_2GHZ;
+	if (!of_property_read_u32(np, "ralink,5ghz",
+                                          &enabled) && !enabled)
+		spec->supported_bands &= ~SUPPORT_BAND_5GHZ;
+#endif /* CONFIG_OF */
+
+	if (rt2x00dev->dev->platform_data) {
+		struct rt2x00_platform_data *pdata;
+
+		pdata = rt2x00dev->dev->platform_data;
+		if (pdata->disable_2ghz)
+			spec->supported_bands &= ~SUPPORT_BAND_2GHZ;
+		if (pdata->disable_5ghz)
+			spec->supported_bands &= ~SUPPORT_BAND_5GHZ;
+	}
+
+	if ((spec->supported_bands & SUPPORT_BAND_BOTH) == 0) {
+		rt2x00_err(rt2x00dev, "No supported bands\n");
+		return -EINVAL;
+	}
+
 
 	num_rates = 0;
 	if (spec->supported_rates & SUPPORT_RATE_CCK)
@@ -1244,7 +1283,7 @@ static inline void rt2x00lib_set_if_combinations(struct rt2x00_dev *rt2x00dev)
 	 */
 	if_limit = &rt2x00dev->if_limits_ap;
 	if_limit->max = rt2x00dev->ops->max_ap_intf;
-	if_limit->types = BIT(NL80211_IFTYPE_AP);
+	if_limit->types = BIT(NL80211_IFTYPE_AP) | BIT(NL80211_IFTYPE_STATION);
 #ifdef CPTCFG_MAC80211_MESH
 	if_limit->types |= BIT(NL80211_IFTYPE_MESH_POINT);
 #endif
@@ -1333,6 +1372,10 @@ int rt2x00lib_probe_dev(struct rt2x00_dev *rt2x00dev)
 	INIT_WORK(&rt2x00dev->intf_work, rt2x00lib_intf_scheduled);
 	INIT_DELAYED_WORK(&rt2x00dev->autowakeup_work, rt2x00lib_autowakeup);
 	INIT_WORK(&rt2x00dev->sleep_work, rt2x00lib_sleep);
+
+	retval = rt2x00lib_load_eeprom_file(rt2x00dev);
+	if (retval)
+		goto exit;
 
 	/*
 	 * Let the driver probe the device to detect the capabilities.
@@ -1474,6 +1517,11 @@ void rt2x00lib_remove_dev(struct rt2x00_dev *rt2x00dev)
 	 * Free the driver data.
 	 */
 	kfree(rt2x00dev->drv_data);
+
+	/*
+	 * Free EEPROM image.
+	 */
+	rt2x00lib_free_eeprom_file(rt2x00dev);
 }
 EXPORT_SYMBOL_GPL(rt2x00lib_remove_dev);
 

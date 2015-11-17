@@ -677,13 +677,15 @@ void ath9k_hw_startpcureceive(struct ath_hw *ah, bool is_scanning)
 
 	ath9k_ani_reset(ah, is_scanning);
 
-	REG_CLR_BIT(ah, AR_DIAG_SW, (AR_DIAG_RX_DIS | AR_DIAG_RX_ABORT));
+	REG_CLR_BIT(ah, AR_DIAG_SW,
+		    AR_DIAG_RX_DIS | AR_DIAG_RX_ABORT | AR_DIAG_FORCE_RX_CLEAR);
 }
 EXPORT_SYMBOL(ath9k_hw_startpcureceive);
 
 void ath9k_hw_abortpcurecv(struct ath_hw *ah)
 {
-	REG_SET_BIT(ah, AR_DIAG_SW, AR_DIAG_RX_ABORT | AR_DIAG_RX_DIS);
+	REG_SET_BIT(ah, AR_DIAG_SW,
+		    AR_DIAG_RX_DIS | AR_DIAG_RX_ABORT | AR_DIAG_FORCE_RX_CLEAR);
 
 	ath9k_hw_disable_mib_counters(ah);
 }
@@ -693,7 +695,7 @@ bool ath9k_hw_stopdmarecv(struct ath_hw *ah, bool *reset)
 {
 #define AH_RX_STOP_DMA_TIMEOUT 10000   /* usec */
 	struct ath_common *common = ath9k_hw_common(ah);
-	u32 mac_status, last_mac_status = 0;
+	u32 mac_status = 0, last_mac_status = 0;
 	int i;
 
 	/* Enable access to the DMA observation bus */
@@ -723,6 +725,16 @@ bool ath9k_hw_stopdmarecv(struct ath_hw *ah, bool *reset)
 	}
 
 	if (i == 0) {
+		if (!AR_SREV_9300_20_OR_LATER(ah) &&
+		    (mac_status & 0x700) == 0) {
+			/*
+			 * DMA is idle but the MAC is still stuck
+			 * processing events
+			 */
+			*reset = true;
+			return true;
+		}
+
 		ath_err(common,
 			"DMA failed to stop in %d ms AR_CR=0x%08x AR_DIAG_SW=0x%08x DMADBG_7=0x%08x\n",
 			AH_RX_STOP_DMA_TIMEOUT / 1000,

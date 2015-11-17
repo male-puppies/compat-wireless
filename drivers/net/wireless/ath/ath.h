@@ -151,6 +151,7 @@ struct ath_common {
 	int debug_mask;
 	enum ath_device_state state;
 	unsigned long op_flags;
+	u32 chan_bw;
 
 	struct ath_ani ani;
 
@@ -318,13 +319,6 @@ void _ath_dbg(struct ath_common *common, enum ATH_DEBUG dbg_mask,
 #endif /* CPTCFG_ATH_DEBUG */
 
 /** Returns string describing opmode, or NULL if unknown mode. */
-#ifdef CPTCFG_ATH_DEBUG
 const char *ath_opmode_to_string(enum nl80211_iftype opmode);
-#else
-static inline const char *ath_opmode_to_string(enum nl80211_iftype opmode)
-{
-	return "UNKNOWN";
-}
-#endif
 
 #endif /* ATH_H */

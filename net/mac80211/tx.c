@@ -1217,8 +1217,10 @@ ieee80211_tx_prepare(struct ieee80211_sub_if_data *sdata,
 
 	if (!tx->sta)
 		info->flags |= IEEE80211_TX_CTL_CLEAR_PS_FILT;
-	else if (test_and_clear_sta_flag(tx->sta, WLAN_STA_CLEAR_PS_FILT))
+	else if (test_and_clear_sta_flag(tx->sta, WLAN_STA_CLEAR_PS_FILT)) {
 		info->flags |= IEEE80211_TX_CTL_CLEAR_PS_FILT;
+		ieee80211_check_fast_xmit(tx->sta);
+	}
 
 	info->flags |= IEEE80211_TX_CTL_FIRST_FRAGMENT;
 
@@ -2450,7 +2452,8 @@ void ieee80211_check_fast_xmit(struct sta_info *sta)
 
 	if (test_sta_flag(sta, WLAN_STA_PS_STA) ||
 	    test_sta_flag(sta, WLAN_STA_PS_DRIVER) ||
-	    test_sta_flag(sta, WLAN_STA_PS_DELIVER))
+	    test_sta_flag(sta, WLAN_STA_PS_DELIVER) ||
+	    test_sta_flag(sta, WLAN_STA_CLEAR_PS_FILT))
 		goto out;
 
 	if (sdata->noack_map)
@@ -2766,7 +2769,8 @@ static bool ieee80211_xmit_fast(struct ieee80211_sub_if_data *sdata,
 
 	if (hdr->frame_control & cpu_to_le16(IEEE80211_STYPE_QOS_DATA)) {
 		*ieee80211_get_qos_ctl(hdr) = tid;
-		hdr->seq_ctrl = ieee80211_tx_next_seq(sta, tid);
+		if (!sta->sta.txq[0])
+			hdr->seq_ctrl = ieee80211_tx_next_seq(sta, tid);
 	} else {
 		info->flags |= IEEE80211_TX_CTL_ASSIGN_SEQ;
 		hdr->seq_ctrl = cpu_to_le16(sdata->sequence_number);

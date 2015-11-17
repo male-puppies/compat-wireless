@@ -402,6 +402,7 @@ static const struct nla_policy nl80211_policy[NUM_NL80211_ATTR] = {
 	[NL80211_ATTR_NETNS_FD] = { .type = NLA_U32 },
 	[NL80211_ATTR_SCHED_SCAN_DELAY] = { .type = NLA_U32 },
 	[NL80211_ATTR_REG_INDOOR] = { .type = NLA_FLAG },
+	[NL80211_ATTR_WIPHY_ANTENNA_GAIN] = { .type = NLA_U32 },
 };
 
 /* policy for the key attributes */
@@ -2208,6 +2209,20 @@ static int nl80211_set_wiphy(struct sk_buff *skb, struct genl_info *info)
 			return result;
 	}
 
+	if (info->attrs[NL80211_ATTR_WIPHY_ANTENNA_GAIN]) {
+		int idx, dbi = 0;
+
+		if (!rdev->ops->set_antenna_gain)
+			return -EOPNOTSUPP;
+
+		idx = NL80211_ATTR_WIPHY_ANTENNA_GAIN;
+		dbi = nla_get_u32(info->attrs[idx]);
+
+		result = rdev->ops->set_antenna_gain(&rdev->wiphy, dbi);
+		if (result)
+			return result;
+	}
+
 	if (info->attrs[NL80211_ATTR_WIPHY_ANTENNA_TX] &&
 	    info->attrs[NL80211_ATTR_WIPHY_ANTENNA_RX]) {
 		u32 tx_ant, rx_ant;
@@ -2404,6 +2419,16 @@ static int nl80211_send_iface(struct sk_buff *msg, u32 portid, u32 seq, int flag
 			if (nl80211_send_chandef(msg, &chandef))
 				goto nla_put_failure;
 		}
+	}
+
+	if (rdev->ops->get_tx_power) {
+		int dbm, ret;
+
+		ret = rdev_get_tx_power(rdev, wdev, &dbm);
+		if (ret == 0 &&
+		    nla_put_u32(msg, NL80211_ATTR_WIPHY_TX_POWER_LEVEL,
+				DBM_TO_MBM(dbm)))
+			goto nla_put_failure;
 	}
 
 	if (wdev->ssid_len) {

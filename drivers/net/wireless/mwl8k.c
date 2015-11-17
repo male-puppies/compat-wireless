@@ -5678,6 +5678,7 @@ MODULE_FIRMWARE("mwl8k/fmimage_8366.fw");
 MODULE_FIRMWARE(MWL8K_8366_AP_FW(MWL8K_8366_AP_FW_API));
 
 static const struct pci_device_id mwl8k_pci_id_table[] = {
+	{ PCI_VDEVICE(MARVELL, 0x2a02), .driver_data = MWL8363, },
 	{ PCI_VDEVICE(MARVELL, 0x2a0a), .driver_data = MWL8363, },
 	{ PCI_VDEVICE(MARVELL, 0x2a0c), .driver_data = MWL8363, },
 	{ PCI_VDEVICE(MARVELL, 0x2a24), .driver_data = MWL8363, },
@@ -6260,6 +6261,8 @@ static int mwl8k_probe(struct pci_dev *pdev,
 
 	priv->running_bsses = 0;
 
+	wait_for_completion(&priv->firmware_loading_complete);
+
 	return rc;
 
 err_stop_firmware:
@@ -6292,8 +6295,6 @@ static void mwl8k_remove(struct pci_dev *pdev)
 	if (hw == NULL)
 		return;
 	priv = hw->priv;
-
-	wait_for_completion(&priv->firmware_loading_complete);
 
 	if (priv->fw_state == FW_STATE_ERROR) {
 		mwl8k_hw_reset(priv);
